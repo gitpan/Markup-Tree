@@ -1,5 +1,5 @@
 package Markup::Tree;
-$VERSION = '1.0.0';
+$VERSION = '1.1.0';
 
 use strict;
 use XML::Parser;
@@ -259,12 +259,41 @@ sub _init_hookups {
 	}
 }
 
+sub get_node {
+	my ($self, $description) = @_;
+	$description = lc $description;
+	my $fault = 1;
+
+	foreach (qw(first last start end root)) {
+		if ($description eq $_) {
+			$fault = 0;
+			last;
+		}
+	}
+
+	if ($fault) {
+		Carp::croak ("Unknown node description $description.");
+	}
+
+	if (($description eq 'first') || ($description eq 'start')) {
+		return ($self->{'_tree'}->next_node());
+	}
+
+	if (($description eq 'last') || ($description eq 'end')) {
+		my $ret;
+		$self->foreach_node(sub { $ret = shift(); });
+		return ($ret);
+	}
+
+	return $self->{'_tree'};
+}
+
 sub foreach_node {
 	my ($self, $start_callback, $end_callback, $start_from) = @_;
 	my $walk_tree;
 
 	if (!$start_from) {
-		if ($end_callback && $end_callback->isa('Markup::TreeNode')) {
+		if ($end_callback && UNIVERSAL::isa($end_callback, 'Markup::TreeNode')) {
 			$start_from = $end_callback;
 			$end_callback = undef;
 		}
@@ -328,8 +357,10 @@ sub save_as {
 			my $node = shift();
 
 			return 1 if ($node->{'element_type'} eq '-->root');
-			return 1 if ($node->{'element_type'} eq '-->comment');
 			return 1 if ($node->{'element_type'} eq '-->declaration');
+
+			print $file '<!-- '.$node->{'text'}." -->\n" and return 1
+				if ($node->{'element_type'} eq '-->comment');
 
 			print $file $self->_rindent($node);
 			unless ($node->{'element_type'} eq '-->text') {
@@ -347,6 +378,8 @@ sub save_as {
 		sub {
 			my $node = shift();
 
+			return 1 if ($node->{'element_type'} eq '-->root');
+			return 1 if ($node->{'element_type'} eq '-->declaration');
 			return 1 if (!scalar(@{$node->{'children'} || []}));
 			return 1 if ($node->{'element_type'} eq '-->text');
 
@@ -551,6 +584,48 @@ This is normally the same value as no_squash_whitespace.
 
 =over 4
 
+=item get_node (description)
+
+Arguments:
+
+=over 4
+
+=item description
+
+Description must be one of the following: C<first>, C<last>, C<start>, C<end>, or C<root>.
+
+=over 4
+
+=item first
+
+Causes the method to return the first node in the tree, not including the C<root> node.
+This is the first actual element found in the markup source.
+
+=item last
+
+Causes the method to return the last node in the tree.
+
+=item start
+
+An alias for C<first>.
+
+=item end
+
+An alias for C<last>.
+
+=item root
+
+Causes the method to return the root node. This is equivalant to $tree->tree.
+
+=back
+
+=back
+
+Example:
+
+	my $first_node = $tree->get_node('first');
+	print "The first node in the tree is a ".$first_node->{'tagname'}." node.\n";
+
 =item parse_file (FILE)
 
 Arguments:
@@ -673,8 +748,6 @@ Something about UNICODE?
 The C<foreach_node> method doesn't behave properly when passed the start_from parameter.
 That's what I thought, at least. The behaviour may work for you in your situation. Just
 know that it may change in the future unless anyone requests otherwise.
-
-The C<save_as> method discards declarations and comments. That will be fixed soon.
 
 Processing instructions are not built into the tree. This will be fixed probably
 in the next release.

@@ -14,4 +14,4 @@ WriteMakefile (ABSTRACT => 'Markup::Tree - Builds an easy syntax tree from a loc
 		   'LWP::Simple' => 0
 	       },
 	       INSTALLMAN3DIR => 'none',
-	       VERSION => v1.0.0);
+	       VERSION => v1.1.0);
