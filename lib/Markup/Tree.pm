@@ -1,5 +1,5 @@
 package Markup::Tree;
-$VERSION = '1.2.1';
+$VERSION = '1.2.2';
 
 ####################################################
 # This module is protected under the terms of the
@@ -80,7 +80,6 @@ sub _work_around_pis {
 		$text =~ s/"/%QUOTE%/g;
 		return "\"{pi:language=$style:$text}\"";
 	};
-	seek $fh, 0, 0;
 	$data = join '', <$fh>;
 
 	# within ""s?
@@ -89,6 +88,8 @@ sub _work_around_pis {
 
 	$data =~ s/<%(.+?)%>/<pi language = "asp-style">$1<\/pi>/sg;
 	$data =~ s/<\?(?:php(?:\d)?)?(.+?)\?>/<pi language = "php-style">$1<\/pi>/sg;
+
+	seek $fh, 0, 0;
 
 	return $data;
 }
@@ -461,10 +462,9 @@ sub _mk_filehandle {
 	if ($something =~ m-^(?:ht|f)tp://-) {
 		my ($data, $fn) = ('', tmpnam());
 		$data = get($something) or Carp::croak("Could not access url $something. $!");
-		open (OUT, $fn);
-		print OUT $data;
-		seek (OUT, 0, 0);
-		return (\*OUT);
+		print $fn $data;
+		seek ($fn, 0, 0);
+		return ($fn);
 	}
 
 	open (TMP, $something) or Carp::croak("Could not open $something for reading. $!");
