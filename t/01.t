@@ -1,10 +1,10 @@
-use Test::Simple tests => 7;
+use Test::Simple tests => 8;
 
 use XML::Parser;
 
 ok(1);
 
-use HTML::Parser;
+use HTML::TreeBuilder;
 
 ok(1);
 
@@ -27,3 +27,5 @@ ok(1);
 my $mt = Markup::Tree->new();
 
 ok($mt);
+
+ok($mt->parse_file('http://search.cpan.org'));

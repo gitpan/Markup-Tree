@@ -28,7 +28,7 @@ DESCRIPTION
     locally or remotely, easily transform it, and save it as HTML or XML (or
     some user-defined format). So I quit whining and wrote one. It's not
     100% finished, but it's a good start and the groundwork for the
-    "Markup::Content" module soon to be coming.
+    Markup::Content module.
 
 CONVENTIONS
     I will be reopening certain terms to save myself keystrokes and you
@@ -48,6 +48,11 @@ CONVENTIONS
         location to a method that wants to write something (such as the
         save_as method).
 
+    pi  I see alot of people using pi or (p)rocessing (i)nstruction to mean
+        a local procressing directive. I am using here and in "TreeNode" to
+        mean also server-side instructions, which are often found in the
+        wild. Please remember that you will not see these from a remote URL.
+
 ARGUMENTS
     These are the arguments you can specify upon instantiation. In most
     cases you can also set them yourself after you have an object of this
@@ -62,7 +67,7 @@ ARGUMENTS
         This parameters requests an anonymous hash with parser-specific
         options. If you specified 'xml' for markup then the "parser_options"
         argument will be passed to XML::Parser. Otherwise it will go to
-        HTML::Parser.
+        HTML::TreeBuilder.
 
     no_squash_whitespace
         There are three modes to this argument:
@@ -79,7 +84,10 @@ ARGUMENTS
             tagnames of which you want to preserve. This is handy when
             re-creating or transforming HTML documents containing
             pre-formatted text, such as "script", "style", "pre", or,
-            sometimes, "code".
+            sometimes, "code". It is also wise to include the fabricated
+            tag, pi. This is the tag that is made up when either <% or <? is
+            encountered, except when within quotes. See Also
+            Markup::TreeNode for a bit more on this.
 
         Example:
 
@@ -106,7 +114,7 @@ METHODS
 
         description
             Description must be one of the following: "first", "last",
-            "start", "end", or "root".
+            "start", "end", "copy-of", "copy", "copy_of", or "root".
 
             first
                 Causes the method to return the first node in the tree, not
@@ -120,6 +128,17 @@ METHODS
                 An alias for "first".
 
             end An alias for "last".
+
+            copy-of
+                Returns a copy of the entire tree. This allows you to have
+                two copies in memory. One that you can chop to bits and
+                another that you can preserve.
+
+            copy
+                An alias for "copy-of".
+
+            copy_of
+                An alias for "copy-of".
 
             root
                 Causes the method to return the root node. This is
@@ -143,7 +162,9 @@ METHODS
                 # or
                 $tree->parse_file ('/home/lackluster/public_html/index.html');
 
-        This method does not return anything.
+        Returns: a refrence to the parser so that you can say things like
+
+                $tree = Markup::Tree->new()->parse_file('noname.html');
 
         Note that this will close the file(handle).
 
@@ -151,9 +172,13 @@ METHODS
         Just the same as HTML or XML ::Parse's parse method. Pass in markup
         data. For HTML you will need to call eof().
 
+        Returns: a refrence to the parser
+
     eof ( )
         Signals the end of HTML markup. Calling eof on XML data will not
         generate an error, it just won't do anything.
+
+        Returns: a refrence to the parser
 
     save_as (FILE [, type])
         Saves the tree to FILE as type, if specified.
@@ -206,12 +231,15 @@ METHODS
         Returning a false value will end the iterations and cause the method
         to return. Return true to keep processing.
 
+    copy_of
+        Returns a copy, not a reference, of the tree.
+
 CAVEATS
     This module isn't really the best for people who don't often use markup.
     It requires quite a few modules (I actually feed bad about the module
-    requirements), and HTML or XML ::Parser is probably a better choice for
-    most things you want to do. On the upside, if you already have these
-    modules, it is a comparativly easy way to use markup.
+    requirements), and "HTML::TreeBuilder" or "XML::Parser" is probably a
+    better choice for most things you want to do. On the upside, if you
+    already have these modules, it is a comparativly easy way to use markup.
 
 BUGS || UNFINISHED
     "Wide character in print" warnings are abound. I haven't taken the time
@@ -222,13 +250,10 @@ BUGS || UNFINISHED
     work for you in your situation. Just know that it may change in the
     future unless anyone requests otherwise.
 
-    Processing instructions are not built into the tree. This will be fixed
-    probably in the next release.
-
     Please inform me of other bugs.
 
 SEE ALSO
-    Markup::TreeNode, XML::Parser, HTML::Parser, LWP::Simple
+    Markup::TreeNode, XML::Parser, HTML::TreeBuilder, LWP::Simple
 
 AUTHOR
     BPrudent (Brandon Prudent)

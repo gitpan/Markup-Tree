@@ -1,9 +1,16 @@
 package Markup::Tree;
-$VERSION = '1.1.0';
+$VERSION = '1.2.1';
+
+####################################################
+# This module is protected under the terms of the
+# GNU GPL. Please see
+# http://www.opensource.org/licenses/gpl-license.php
+# for more information.
+####################################################
 
 use strict;
 use XML::Parser;
-use HTML::Parser;
+use HTML::TreeBuilder;
 use Markup::TreeNode;
 use File::Temp qw/ :POSIX /;
 use LWP::Simple;
@@ -51,36 +58,172 @@ sub init {
 		{
 			$self->{'parser_options'}->{'api_version'} = 3;
 		}
-		$self->{'_parser'} = HTML::Parser->new( %{ $self->{'parser_options'} } );
+
+		for ($self->{'_parser'}) {
+			$_ = HTML::TreeBuilder->new( %{ $self->{'parser_options'} } );
+			$_->ignore_unknown(0);
+			$_->no_space_compacting(1);
+			$_->store_comments(1);
+			$_->store_declarations(1);
+			$_->store_pis(1);
+		}
 	}
+
+	$self->_init_hookups () if ($self->{'markup'} eq 'xml');
+}
+
+sub _work_around_pis {
+	my $fh = shift();
+	my $data;
+	my $fix = sub {
+		my ($style, $text) = @_;
+		$text =~ s/"/%QUOTE%/g;
+		return "\"{pi:language=$style:$text}\"";
+	};
+	seek $fh, 0, 0;
+	$data = join '', <$fh>;
+
+	# within ""s?
+	$data =~ s/"<%(.+?)%>"/$fix->('asp-style', $1)/seg;
+	$data =~ s/"<\?(?:php(?:\d)?)?(.+?)\?>"/$fix->('asp-style', $1)/seg;
+
+	$data =~ s/<%(.+?)%>/<pi language = "asp-style">$1<\/pi>/sg;
+	$data =~ s/<\?(?:php(?:\d)?)?(.+?)\?>/<pi language = "php-style">$1<\/pi>/sg;
+
+	return $data;
 }
 
 sub parse_file {
 	my ($self, $file) = @_;
 
-	$self->_init_hookups ();
 	$file = _mk_filehandle($file);
 
 	if ($self->{'markup'} eq 'xml') {
 		$self->parse($file);
 	}
 	else {
-	    if (!$self->{'_parser'}->parse_file ($file)) {
-		Carp::croak($!);
-	    }
+	    $self->parse (_work_around_pis($file));
+	    $self->eof();
 	}
 
 	close ($file);
+	return $self; # so you can say Markup::Tree->new()->parse_file('foo.html');
 }
 
 sub parse {
-	shift()->{'_parser'}->parse (shift());
+	$_ = shift();
+	$_->{'_parser'}->parse (shift());
+	return $_;
 }
 
 sub eof {
 	my $self = shift();
-	$self->_init_hookups ();
-	$self->{'_parser'}->eof ();
+	if ($self->{'markup'} ne 'xml') {
+		$self->{'_parser'}->eof ();
+		$self->{'_parser'}->elementify();
+		$self->_init_hookups();
+	}
+	return $self;
+}
+
+sub _init_hookups {
+	my $self = shift();
+
+	$self->{'_globals'}->{'level'} = 0;
+	$self->{'_globals'}->{'last_node'} = $self->{'_tree'};
+
+	if ($self->{'markup'} eq 'xml') {
+		$self->_init_xml_hookups ();
+	}
+	else {
+		$self->_init_html_hookups ();
+	}
+}
+
+# TODO: bring anything before html up
+sub _init_html_hookups {
+	my $self = shift();
+	my $build_tree;
+
+	$build_tree = sub {
+		my $tag = shift();
+		my $node;
+		my %options = ( level => $self->{'_globals'}->{'level'} );
+		my $parent = $self->{'_globals'}->{'last_node'};
+		my %mapping = ( '~text' => '-->text',
+				'~comment' => '-->comment',
+				'~declaration' => '-->declaration',
+				'~pi' => '-->pi' ); # unlikely
+
+		@_ = $tag->all_external_attr();
+		while (@_) { $options{'attr'}->{pop(@_)} = pop(@_); }
+		delete $options{'attr'}->{'/'};
+		$tag->objectify_text();
+
+		if (exists $mapping{$tag->tag()}) {
+			$options{'element_type'} = $mapping{$tag->tag()};
+			$options{'tagname'} = $options{'element_type'};
+		}
+		else {
+			$options{'element_type'} = 'tag';
+			$options{'tagname'} = $tag->tag();
+		}
+
+		if ($options{'element_type'} eq '-->text') {
+			$options{'text'} = $tag->{'text'};
+			if ($self->{'no_squash_whitespace'}) {
+				if (ref($self->{'no_squash_whitespace'}) eq 'ARRAY') {
+					my $squash = 1;
+					foreach (@{ $self->{'no_squash_whitespace'} }) {
+						if ($_ eq $self->{'_globals'}->{'last_node'}->{'tagname'}) {
+							$squash = 0;
+							last;
+						}
+					}
+					if ($squash) {
+						$options{'text'} = _squash_whitespace ($options{'text'});
+						return if (!$options{'text'});
+					}
+				}
+			}
+			else {
+				$options{'text'} = _squash_whitespace ($options{'text'});
+				return if (!$options{'text'});
+			}
+		}
+
+		$node = Markup::TreeNode->new(%options);
+
+		while (($node->{'level'} - 1) != $parent->{'level'}) {
+			if ($parent->{'parent'} eq '(empty)') { last; }
+			$parent = $parent->{'parent'};
+		}
+
+		$node->attach_parent($parent);
+
+		$self->{'_globals'}->{'last_node'} = $node;
+
+		foreach my $child ($tag->content_list) {
+			$self->{'_globals'}->{'level'}++;
+			if ($child->isa('HTML::Element')) {
+				$build_tree->($child);
+			}
+			else {
+				Carp::croak("Don't recognize $child!");
+			}
+			$self->{'_globals'}->{'level'}--;
+		}
+	};
+
+	$build_tree->($self->{'_parser'});
+}
+
+sub _squash_whitespace {
+	my $text = shift();
+	$text =~ s/^(?:\s+)/ /sm;
+	$text =~ s/(?:\s+)$/ /sm;
+	$text =~ s/(\s){2,}/$1/gsm;
+	return ($text =~ m/^(?:\s+)?$/) ? undef : $text;
 }
 
 sub _init_xml_hookups {
@@ -93,6 +236,7 @@ sub _init_xml_hookups {
 		while (scalar(@attrs)) {
 			$attrs{pop(@attrs)} = pop(@attrs);
 		}
+		delete $attrs{'/'};
 		my $node = Markup::TreeNode->new (element_type => 'tag', tagname => $tag, attr => \%attrs,
 							level => $self->{'_globals'}->{'level'});
 		my $parent = $self->{'_globals'}->{'last_node'};
@@ -111,13 +255,6 @@ sub _init_xml_hookups {
 
 	$self->{'_parser'}->setHandlers('Char', sub {
 		my ($expat, $text) = @_;
-		my $squash_whitespace = sub {
-			my $text = shift();
-			$text =~ s/^(?:\s+)/ /sm;
-			$text =~ s/(?:\s+)$/ /sm;
-			$text =~ s/(\s){2,}/$1/sm;
-			return $text;
-		};
 
 		if ($self->{'no_squash_whitespace'}) {
 			if (ref($self->{'no_squash_whitespace'}) eq 'ARRAY') {
@@ -128,11 +265,13 @@ sub _init_xml_hookups {
 						last;
 					}
 				}
-				$text = $squash_whitespace->($text) if ($squash);
+				$text = _squash_whitespace ($text) if ($squash);
+				return if (!$text);
 			}
 		}
 		else {
-			$text = $squash_whitespace->($text);
+			$text = _squash_whitespace ($text);
+			return if (!$text);
 		}
 
 		if ($self->{'_globals'}->{'new'}->[0]) {
@@ -154,117 +293,12 @@ sub _init_xml_hookups {
 	});
 }
 
-sub _init_html_hookups {
-	my $self = shift();
-	$self->{'_parser'}->unbroken_text(1);
-
-	$self->{'_parser'}->handler(start => sub {
-		my ($tag, $a) = @_;
-		my %attrs = %{ $a };
-		my $node = Markup::TreeNode->new (element_type => 'tag', tagname => $tag, attr => \%attrs,
-							level => $self->{'_globals'}->{'level'});
-		my $parent = $self->{'_globals'}->{'last_node'};
-
-		while (($node->{'level'} - 1) != $parent->{'level'}) {
-			if ($parent->{'parent'} eq '(empty)') { last; }
-			$parent = $parent->{'parent'};
-		}
-
-		$node->attach_parent($parent);
-
-		$self->{'_globals'}->{'last_node'} = $node;
-		$self->{'_globals'}->{'level'}++;
-	}, 'tagname, attr');
-
-	$self->{'_parser'}->handler( text => sub {
-		my $text = shift();
-		my $squash_whitespace = sub {
-			my $text = shift();
-			$text =~ s/^(?:\s+)/ /sm;
-			$text =~ s/(?:\s+)$/ /sm;
-			$text =~ s/(\s){2,}/$1/sm;
-			return ($text =~ m/^(?:\s+)$/) ? undef : $text;
-		};
-
-		if ($self->{'no_squash_whitespace'}) {
-			if (ref($self->{'no_squash_whitespace'}) eq 'ARRAY') {
-				my $squash = 1;
-				foreach (@{ $self->{'no_squash_whitespace'} }) {
-					if ($_ eq $self->{'_globals'}->{'last_node'}->{'tagname'}) {
-						$squash = 0;
-						last;
-					}
-				}
-				if ($squash) {
-					$text = $squash_whitespace->($text);
-					return if (!$text);
-				}
-			}
-		}
-		else {
-			$text = $squash_whitespace->($text);
-			return if (!$text);
-		}
-
-		my $estruct = Markup::TreeNode->new(element_type => '-->text', tagname => '-->text',
-					level => ($self->{'_globals'}->{'last_node'}->{'level'} + 1),
-					text => $text);
-
-		$self->{'_globals'}->{'last_node'}->attach_child($estruct);
-	}, 'dtext' );
-
-	$self->{'_parser'}->handler( comment => sub {
-		(my $text = shift()) =~ s|^(?:<!)(?:-{2,})(.+?)(?:-{2,})(?:!)?>|$1|;
-
-		$self->{'_globals'}->{'last_node'}->attach_child(
-			Markup::TreeNode->new(
-				element_type => '-->comment',
-				tagname => '-->comment',
-				level => ($self->{'_globals'}->{'last_node'}->{'level'} + 1),
-				text => $text
-			)
-		);
-	}, 'text' );
-
-	$self->{'_parser'}->handler( declaration => sub {
-		(my $text = shift()) =~ s|^(?:<!)(.+?)(?:>)|$1|;
-		my $treenode = Markup::TreeNode->new(
-					element_type => '-->declaration',
-					tagname => '-->declaration',
-					text => $text,
-					level => $self->{'_globals'}->{'level'}
-				);
-
-		$self->{'_globals'}->{'last_node'}->attach_child($treenode);
-
-		$self->{'_globals'}->{'last_node'} = $treenode;
-	}, 'text');
-
-	$self->{'_parser'}->handler( end => sub {
-		$self->{'_globals'}->{'level'}--;
-	});
-}
-
-sub _init_hookups {
-	my $self = shift();
-
-	$self->{'_globals'}->{'level'} = 0;
-	$self->{'_globals'}->{'last_node'} = $self->{'_tree'};
-
-	if ($self->{'markup'} eq 'xml') {
-		$self->_init_xml_hookups ();
-	}
-	else {
-		$self->_init_html_hookups ();
-	}
-}
-
 sub get_node {
 	my ($self, $description) = @_;
 	$description = lc $description;
 	my $fault = 1;
 
-	foreach (qw(first last start end root)) {
+	foreach (qw(first last start end root copy-of copy copy_of)) {
 		if ($description eq $_) {
 			$fault = 0;
 			last;
@@ -273,6 +307,10 @@ sub get_node {
 
 	if ($fault) {
 		Carp::croak ("Unknown node description $description.");
+	}
+
+	if (($description eq 'copy-of') || ($description eq 'copy') || ($description eq 'copy_of')) {
+		return ($self->{'_tree'}->copy_of());
 	}
 
 	if (($description eq 'first') || ($description eq 'start')) {
@@ -316,9 +354,9 @@ sub foreach_node {
 		}
 		elsif ($tree->isa('Markup::TreeNode')) {
 			if ($tree->{'element_type'} eq '-->ignore') {
+				$walk_tree->($tree->{'children'});
 				return;
 			}
-
 			return if (!$start_callback->($tree));
 			$walk_tree->($tree->{'children'});
 			if ($end_callback && ref($end_callback) eq 'CODE') {
@@ -423,7 +461,7 @@ sub _mk_filehandle {
 	if ($something =~ m-^(?:ht|f)tp://-) {
 		my ($data, $fn) = ('', tmpnam());
 		$data = get($something) or Carp::croak("Could not access url $something. $!");
-		open (OUT, "+>$fn");
+		open (OUT, $fn);
 		print OUT $data;
 		seek (OUT, 0, 0);
 		return (\*OUT);
@@ -451,6 +489,25 @@ sub _mk_filehandle_write {
 }
 
 sub tree { shift()->{'_tree'}; }
+
+sub copy_of {
+	my $self = shift();
+	my ($newbie => %options); # if you don't know you betta' axe somebody!
+
+	foreach (keys %{ $self }) {
+		$options{$_} = $self->{$_};
+	}
+
+	foreach (qw(_parser _globals _tree)) {
+		delete $options{$_};
+	}
+
+	$newbie = $self->new(%options);
+
+	$newbie->{'_tree'} = $self->get_node('first')->copy_of();
+
+	return ($newbie);
+}
 
 1;
 
@@ -487,7 +544,7 @@ Markup::Tree - Unified way to easily access XML or HTML markup locally or remotl
 I wanted a module to allow one to access either XML or HTML input, locally or remotely, easily
 transform it, and save it as HTML or XML (or some user-defined format). So I quit whining and
 wrote one. It's not 100% finished, but it's a good start and the groundwork for the
-C<Markup::Content> module soon to be coming.
+L<Markup::Content> module.
 
 =head1 CONVENTIONS
 
@@ -508,6 +565,12 @@ open it for writing. Also, we cannot write to a remote location (at least, the
 functionality does not exist in this module to do so) so please don't pass a
 remote location to a method that wants to write something (such as the save_as method).
 
+=item pi
+
+I see alot of people using pi or (p)rocessing (i)nstruction to mean a local procressing directive.
+I am using here and in C<TreeNode> to mean also server-side instructions, which are often
+found in the wild. Please remember that you will not see these from a remote URL.
+
 =back
 
 =head1 ARGUMENTS
@@ -527,7 +590,7 @@ forgiving.
 
 This parameters requests an anonymous hash with parser-specific options. If you specified
 'xml' for markup then the C<parser_options> argument will be passed to L<XML::Parser>.
-Otherwise it will go to L<HTML::Parser>.
+Otherwise it will go to L<HTML::TreeBuilder>.
 
 =item no_squash_whitespace
 
@@ -548,7 +611,9 @@ as possible.
 
 Set C<no_squash_whitespace> to an anonymous array containing tagnames of which you want to
 preserve. This is handy when re-creating or transforming HTML documents containing pre-formatted
-text, such as C<script>, C<style>, C<pre>, or, sometimes, C<code>.
+text, such as C<script>, C<style>, C<pre>, or, sometimes, C<code>. It is also wise to include the
+fabricated tag, pi. This is the tag that is made up when either <% or <? is encountered, except
+when within quotes. See Also L<Markup::TreeNode> for a bit more on this.
 
 =back
 
@@ -592,7 +657,7 @@ Arguments:
 
 =item description
 
-Description must be one of the following: C<first>, C<last>, C<start>, C<end>, or C<root>.
+Description must be one of the following: C<first>, C<last>, C<start>, C<end>, C<copy-of>, C<copy>, C<copy_of>, or C<root>.
 
 =over 4
 
@@ -612,6 +677,19 @@ An alias for C<first>.
 =item end
 
 An alias for C<last>.
+
+=item copy-of
+
+Returns a copy of the entire tree. This allows you to have two copies in
+memory. One that you can chop to bits and another that you can preserve.
+
+=item copy
+
+An alias for C<copy-of>.
+
+=item copy_of
+
+An alias for C<copy-of>.
 
 =item root
 
@@ -644,7 +722,9 @@ Example:
 	# or
 	$tree->parse_file ('/home/lackluster/public_html/index.html');
 
-This method does not return anything.
+Returns: a refrence to the parser so that you can say things like
+
+	$tree = Markup::Tree->new()->parse_file('noname.html');
 
 Note that this will close the file(handle).
 
@@ -653,10 +733,14 @@ Note that this will close the file(handle).
 Just the same as HTML or XML ::Parse's parse method. Pass in markup data.
 For HTML you will need to call eof().
 
+Returns: a refrence to the parser
+
 =item eof ( )
 
 Signals the end of HTML markup. Calling eof on XML data will not
 generate an error, it just won't do anything.
+
+Returns: a refrence to the parser
 
 =item save_as (FILE [, type])
 
@@ -730,13 +814,17 @@ B<RETURN VALUES MATTER!>
 Returning a false value will end the iterations and cause the method to return.
 Return true to keep processing.
 
+=item copy_of
+
+Returns a copy, not a reference, of the tree.
+
 =back
 
 =head1 CAVEATS
 
 This module isn't really the best for people who don't often use markup. It
 requires quite a few modules (I actually feed bad about the module requirements),
-and HTML or XML ::Parser is probably a better choice for most things you want to
+and C<HTML::TreeBuilder> or C<XML::Parser> is probably a better choice for most things you want to
 do. On the upside, if you already have these modules, it is a comparativly easy
 way to use markup.
 
@@ -749,14 +837,11 @@ The C<foreach_node> method doesn't behave properly when passed the start_from pa
 That's what I thought, at least. The behaviour may work for you in your situation. Just
 know that it may change in the future unless anyone requests otherwise.
 
-Processing instructions are not built into the tree. This will be fixed probably
-in the next release.
-
 Please inform me of other bugs.
 
 =head1 SEE ALSO
 
-L<Markup::TreeNode>, L<XML::Parser>, L<HTML::Parser>, L<LWP::Simple>
+L<Markup::TreeNode>, L<XML::Parser>, L<HTML::TreeBuilder>, L<LWP::Simple>
 
 =head1 AUTHOR
 

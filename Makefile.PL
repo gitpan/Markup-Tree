@@ -8,10 +8,10 @@ WriteMakefile (ABSTRACT => 'Markup::Tree - Builds an easy syntax tree from a loc
 	       NAME => 'Markup::Tree',
 	       PREREQ_PM => {
 		   'XML::Parser' => 0,
-		   'HTML::Parser' => 0,
+		   'HTML::TreeBuilder' => 0,
 		   'Markup::TreeNode' => 0,
 		   'File::Temp' => 0,
 		   'LWP::Simple' => 0
 	       },
 	       INSTALLMAN3DIR => 'none',
-	       VERSION => v1.1.0);
+	       VERSION => v1.2.1);
